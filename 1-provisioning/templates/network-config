@@ -1,0 +1,7 @@
+version: 2
+ethernets:
+  default-dhcp:
+    match:
+      name: "en*"
+    dhcp4: true
+

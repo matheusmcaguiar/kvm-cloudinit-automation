@@ -1,0 +1,6 @@
+1-provisioning/templates/cfg-vm_create.env
+1-provisioning/downloads/*
+!1-provisioning/downloads/.gitkeep
+2-inventory/ips_list
+!2-inventory/.gitkeep
+

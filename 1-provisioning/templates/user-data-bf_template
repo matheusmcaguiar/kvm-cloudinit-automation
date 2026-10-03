@@ -1,0 +1,15 @@
+#cloud-config
+# user-data-bf_template (Base Image / Backing File Preparation)
+
+#package_update: true
+#package_upgrade: true
+
+runcmd:
+  - echo ">> Base provisioning finished. Preparing to shutdown."
+
+power_state:
+  delay: "now"
+  mode: poweroff
+  message: "Cloud-init baseline provisioning complete. Shutting down."
+  timeout: 30
+

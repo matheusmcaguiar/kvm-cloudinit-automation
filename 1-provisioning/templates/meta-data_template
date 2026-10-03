@@ -1,0 +1,3 @@
+instance-id: $INAME
+local-hostname: $HNAME
+
