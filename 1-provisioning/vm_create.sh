@@ -1,24 +1,28 @@
 #!/bin/bash
 # vm_create.sh
-# Version: 1.0
+# Version: 1.1
 # Script for sequential VM/Cloud-init provisioning.
 # Author: Matheus Aguiar <matheus.mc.aguiar@gmail.com>
 #
 #-------------------------------------------------------------------------------
 # Prerequisites:
 #	- Root privileges (sudo)
-#	- KVM enabled and running
-#	- openssl
 #	- ssh public key for the user ~/.ssh/ at the host
-#	- envsubst (gettext package)
-#	- libguestfs-tools
-#	- virt-install
-#	- virt-sysprep
-#	- virsh
-#	- qemu-img
-#-------------------------------------------------------------------------------
-# TODO:
-#	- Add host option for RHEL-like with SELINUX
+#	- run './0-bootstrap_host.sh' or '../main.sh'
+#		OR
+#			Packages installed:
+#				- gettext-base (Debian) or gettext (RHEL)
+#				- openssl
+#				- curl
+#				- libvirt-daemon-system (Debian)
+#				- libvirt-clients (Debian)
+#				- libvirt (RHEL)
+#				- virtinst (Debian)
+#				- virt-install (RHEL)
+#				- guestfs-tools
+#				- qemu-utils (Debian)
+#			Service running:
+#				- libvirtd
 #
 ################################################################################
 # INTERNAL CONFIGURATIONS
@@ -36,9 +40,10 @@ if [ "$EUID" -ne 0 ] || [ -z "$SUDO_USER" ]; then
 	exit 1
 fi
 # Verify if all required commands are available
-for cmd in virt-install qemu-img virt-sysprep envsubst virsh openssl; do
+for cmd in envsubst openssl virsh virt-install virt-sysprep qemu-img; do
 	if ! command -v "$cmd" &> /dev/null; then
 		echo ">>## [ERROR] The required command '$cmd' is not installed." >&2
+		echo ">>## Please run 0-bootstrap_host.sh"
 		exit 1
 	fi
 done
@@ -134,10 +139,18 @@ case ${1:-} in
 		demolish
 		if [ -f "${DISK_PATH}/${DISK_BF}" ]; then
 			echo ">>## Removing the backing file..."
-			rm ${DISK_PATH}/${DISK_BF} || true
+			rm "${DISK_PATH}/${DISK_BF}" || true
 			echo ">>## Backing file deleted."
 		else
 			echo ">>## Backing file does not exist."
+		fi
+		if ! virsh net-info "${NET_NAME}" >/dev/null 2>&1; then
+			echo ">>## Network ${NET_NAME} does not exist."
+		else
+			echo ">>## Removing network ${NET_NAME}..."
+			virsh net-destroy "${NET_NAME}" 2>/dev/null || true
+			virsh net-undefine "${NET_NAME}" 2>/dev/null || true
+			echo ">>## Network ${NET_NAME} deleted."
 		fi
 		exit 0
 		;;
@@ -181,7 +194,40 @@ if [ "$VM_COUNT" -gt 0 ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 1. Backing File Preparation (Base Image)
+# 1. VMs Network
+# ------------------------------------------------------------------------------
+echo ">>## Verifying network..."
+if ! virsh net-info "${NET_NAME}" >/dev/null 2>&1; then
+	echo ">>## Network ${NET_NAME} not found. Creating..."
+	cat <<- EOF > "${TMP_DIR}${NET_NAME}.xml"
+	<network>
+		<name>${NET_NAME}</name>
+		<forward mode="nat"/>
+		<bridge name="virtbr-${NET_NAME}" stp="off" delay="0"/>
+		<ip address="${NET_SUB}.1" netmask="${NET_MASK}">
+			<dhcp>
+				<range start="${NET_SUB}.${IP_START}" end="${NET_SUB}.${IP_END}"/>
+			</dhcp>
+		</ip>
+	</network>
+	EOF
+	virsh net-define "${TMP_DIR}${NET_NAME}.xml"
+	echo ">>## Network ${NET_NAME} created. Activating..."
+	virsh net-start "${NET_NAME}"
+	virsh net-autostart "${NET_NAME}"
+	rm "${TMP_DIR}${NET_NAME}.xml"
+else
+	NET_STATUS=$(virsh net-info "${NET_NAME}" | grep -i "Active:" | awk '{print $2}')
+	if [ "${NET_STATUS}" = "no" ]; then
+		echo ">>## Network '${NET_NAME}' found but is not active. Activating..."
+		virsh net-start "${NET_NAME}"
+		virsh net-autostart "${NET_NAME}"
+	fi
+fi
+echo ">>## Network ${NET_NAME} is ready."
+
+# ------------------------------------------------------------------------------
+# 2. Backing File Preparation (Base Image)
 # ------------------------------------------------------------------------------
 # Checking the existence of the backing file
 if [ -f "${DISK_PATH}/${DISK_BF}" ]; then
@@ -194,9 +240,9 @@ else
 		echo ">>## ${BASE_PATH}/${BASE} does not exist in this project."
 		echo ">>## Downloading CHECKSUM for $BASE..."
 		if sudo -u "$REAL_USER" curl -L "${URL_BASE}/CHECKSUM" -o "${BASE_PATH}/${CHECK_FILE}"; then
-			echo "##>> CHECKSUM download successful."
+			echo ">>## CHECKSUM download successful."
 		else
-			echo "##>> CHECKSUM download failed."
+			echo ">>## CHECKSUM download failed."
 			exit 1
 		fi
 		echo ">>## Downloading Base Image for Backing File (~600MB)..."
@@ -254,7 +300,7 @@ if [ "${VM_COUNT}" -eq 0 ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 2. Final VM Creation (Linked Clones)
+# 3. Final VM Creation (Linked Clones)
 # ------------------------------------------------------------------------------
 # Create VMs
 for ((n=1; n<=VM_COUNT; n++)); do
@@ -275,11 +321,11 @@ for ((n=1; n<=VM_COUNT; n++)); do
 done
 
 # ------------------------------------------------------------------------------
-# 3. Summary
+# 4. Summary
 # ------------------------------------------------------------------------------
 echo ">>## Successfully created ${VM_COUNT} machine(s)."
 echo ">>## Waiting for network to come up on all VMs..."
-timeout=60
+timeout=120
 elapsed=0
 while true; do
 	if [ "$elapsed" -ge "$timeout" ]; then
@@ -314,6 +360,6 @@ echo ">>## Machine(s) online:"
 echo "-------------------------------------------------------------"
 for ((n=1; n<=VM_COUNT; n++)); do
 	ip=$(virsh domifaddr "${NODE_TYPE}${SEP}${n}" | grep -E -o '([0-9]+\.){3}[0-9]{1,3}' | head -1)
-	echo "${NODE_TYPE}${SEP}${n}:${ip}" | sudo -u $REAL_USER tee -a $IPS_LIST
+	echo "${NODE_TYPE}${SEP}${n}:${ip}" | sudo -u $REAL_USER tee -a "$IPS_LIST"
 done
 echo "-------------------------------------------------------------"
